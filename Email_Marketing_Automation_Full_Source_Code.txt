@@ -1,0 +1,701 @@
+EMAIL MARKETING AUTOMATION SYSTEM
+
+COMPLETE SOURCE CODE
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/README.txt
+========================================================================
+
+EMAIL MARKETING AUTOMATION SYSTEM
+
+PROJECT MODULES 1. Subscriber Management 2. Email Campaign Creation 3.
+Email Automation System 4. Campaign Analytics Dashboard 5. Report
+Generation
+
+TECHNOLOGY - Python Flask - SQLite Database - HTML - CSS
+
+HOW TO RUN 1. Install Python. 2. Open this folder in VS Code. 3. Open
+Terminal. 4. Run: pip install -r requirements.txt
+
+5.  Then run: python app.py
+
+6.  Open: http://127.0.0.1:5000
+
+DEMO FLOW 1. Add subscribers. 2. Create a campaign. 3. Select the
+audience. 4. Schedule or process the campaign. 5. View Analytics. 6.
+Generate and export reports.
+
+NOTE Campaign sending is simulated for the academic demonstration.
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/app.py
+========================================================================
+
+from flask import Flask, render_template, request, redirect, url_for,
+flash, send_file import sqlite3, os, csv, io from datetime import
+datetime
+
+app = Flask(name) app.secret_key = “email-marketing-capstone” DB_PATH =
+os.path.join(os.path.dirname(file), “email_marketing.db”)
+
+def get_db(): conn = sqlite3.connect(DB_PATH) conn.row_factory =
+sqlite3.Row return conn
+
+def init_db(): conn = get_db() conn.executescript(““” CREATE TABLE IF
+NOT EXISTS subscribers( id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT
+NOT NULL, email TEXT NOT NULL UNIQUE, customer_group TEXT DEFAULT
+‘General’, status TEXT DEFAULT ‘Active’, created_at TEXT NOT NULL );
+
+    CREATE TABLE IF NOT EXISTS campaigns(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        audience TEXT NOT NULL,
+        template_name TEXT NOT NULL,
+        body TEXT NOT NULL,
+        scheduled_at TEXT,
+        status TEXT DEFAULT 'Draft',
+        campaign_type TEXT DEFAULT 'Promotional',
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS analytics(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id INTEGER NOT NULL,
+        delivered INTEGER DEFAULT 0,
+        opened INTEGER DEFAULT 0,
+        clicked INTEGER DEFAULT 0,
+        recorded_at TEXT NOT NULL,
+        FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+    );
+    """)
+    conn.commit()
+    conn.close()
+
+@app.route(“/”) def dashboard(): conn = get_db() subscriber_count =
+conn.execute(“SELECT COUNT() c FROM subscribers”).fetchone()[”c”]
+campaign_count = conn.execute(”SELECT COUNT() c FROM
+campaigns”).fetchone()[“c”] sent_count = conn.execute(“SELECT COUNT(*) c
+FROM campaigns WHERE status=‘Sent’“).fetchone()[“c”]
+
+    totals = conn.execute("""
+        SELECT COALESCE(SUM(delivered),0) delivered,
+               COALESCE(SUM(opened),0) opened,
+               COALESCE(SUM(clicked),0) clicked
+        FROM analytics
+    """).fetchone()
+
+    open_rate = round((totals["opened"]/totals["delivered"]*100),1) if totals["delivered"] else 0
+    click_rate = round((totals["clicked"]/totals["delivered"]*100),1) if totals["delivered"] else 0
+
+    recent = conn.execute("""
+        SELECT c.*, a.delivered, a.opened, a.clicked
+        FROM campaigns c
+        LEFT JOIN analytics a ON a.campaign_id=c.id
+        ORDER BY c.id DESC LIMIT 5
+    """).fetchall()
+
+    conn.close()
+    return render_template("dashboard.html",
+                           subscriber_count=subscriber_count,
+                           campaign_count=campaign_count,
+                           sent_count=sent_count,
+                           open_rate=open_rate,
+                           click_rate=click_rate,
+                           recent=recent)
+
+@app.route(“/subscribers”) def subscribers(): conn = get_db() rows =
+conn.execute(“SELECT * FROM subscribers ORDER BY id DESC”).fetchall()
+conn.close() return render_template(“subscribers.html”,
+subscribers=rows)
+
+@app.route(“/subscribers/add”, methods=[“POST”]) def add_subscriber():
+name = request.form.get(“name”,““).strip() email =
+request.form.get(”email”,““).strip() customer_group =
+request.form.get(”customer_group”,“General”).strip() or “General” status
+= request.form.get(“status”,“Active”) if not name or not email:
+flash(“Name and email are required.”, “danger”) return
+redirect(url_for(“subscribers”))
+
+    try:
+        conn = get_db()
+        conn.execute("""
+            INSERT INTO subscribers(name,email,customer_group,status,created_at)
+            VALUES(?,?,?,?,?)
+        """,(name,email,customer_group,status,datetime.now().isoformat(timespec="seconds")))
+        conn.commit()
+        conn.close()
+        flash("Subscriber added successfully.", "success")
+    except sqlite3.IntegrityError:
+        flash("This email already exists.", "warning")
+
+    return redirect(url_for("subscribers"))
+
+@app.route(“/subscribers//delete”, methods=[“POST”]) def
+delete_subscriber(sid): conn = get_db() conn.execute(“DELETE FROM
+subscribers WHERE id=?”,(sid,)) conn.commit() conn.close()
+flash(“Subscriber deleted.”, “success”) return
+redirect(url_for(“subscribers”))
+
+@app.route(“/subscribers/import”, methods=[“POST”]) def
+import_subscribers(): file = request.files.get(“file”) if not file:
+flash(“Please choose a CSV file.”, “warning”) return
+redirect(url_for(“subscribers”))
+
+    content = file.stream.read().decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+    conn = get_db()
+    added = 0
+
+    for row in reader:
+        name = (row.get("name") or "").strip()
+        email = (row.get("email") or "").strip()
+        group = (row.get("customer_group") or "General").strip()
+        if not name or not email:
+            continue
+        try:
+            conn.execute("""
+                INSERT INTO subscribers(name,email,customer_group,status,created_at)
+                VALUES(?,?,?,?,?)
+            """,(name,email,group,"Active",datetime.now().isoformat(timespec="seconds")))
+            added += 1
+        except sqlite3.IntegrityError:
+            pass
+
+    conn.commit()
+    conn.close()
+    flash(f"{added} subscriber(s) imported.", "success")
+    return redirect(url_for("subscribers"))
+
+@app.route(“/campaigns”) def campaigns(): conn = get_db() rows =
+conn.execute(“SELECT * FROM campaigns ORDER BY id DESC”).fetchall()
+conn.close() return render_template(“campaigns.html”, campaigns=rows)
+
+@app.route(“/campaigns/create”, methods=[“GET”,“POST”]) def
+create_campaign(): conn = get_db() groups = conn.execute(“SELECT
+DISTINCT customer_group FROM subscribers ORDER BY
+customer_group”).fetchall()
+
+    if request.method == "POST":
+        name = request.form["name"].strip()
+        subject = request.form["subject"].strip()
+        sender = request.form["sender"].strip()
+        audience = request.form["audience"].strip()
+        template_name = request.form["template_name"].strip()
+        campaign_type = request.form["campaign_type"].strip()
+        body = request.form["body"].strip()
+        scheduled_at = request.form.get("scheduled_at","").strip() or None
+        status = "Scheduled" if scheduled_at else "Draft"
+
+        conn.execute("""
+            INSERT INTO campaigns
+            (name,subject,sender,audience,template_name,body,scheduled_at,status,campaign_type,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+        """,(name,subject,sender,audience,template_name,body,scheduled_at,status,campaign_type,
+             datetime.now().isoformat(timespec="seconds")))
+        conn.commit()
+        conn.close()
+        flash("Campaign created successfully.", "success")
+        return redirect(url_for("campaigns"))
+
+    conn.close()
+    return render_template("campaign_form.html", groups=groups)
+
+@app.route(“/campaigns//send”, methods=[“POST”]) def send_campaign(cid):
+conn = get_db() campaign = conn.execute(“SELECT * FROM campaigns WHERE
+id=?”,(cid,)).fetchone()
+
+    if not campaign:
+        conn.close()
+        flash("Campaign not found.", "danger")
+        return redirect(url_for("campaigns"))
+
+    if campaign["audience"] == "All":
+        delivered = conn.execute("SELECT COUNT(*) c FROM subscribers WHERE status='Active'").fetchone()["c"]
+    else:
+        delivered = conn.execute("""
+            SELECT COUNT(*) c FROM subscribers
+            WHERE status='Active' AND customer_group=?
+        """,(campaign["audience"],)).fetchone()["c"]
+
+    # Safe academic simulation
+    opened = int(delivered * 0.62)
+    clicked = int(delivered * 0.21)
+
+    conn.execute("UPDATE campaigns SET status='Sent' WHERE id=?",(cid,))
+    conn.execute("DELETE FROM analytics WHERE campaign_id=?",(cid,))
+    conn.execute("""
+        INSERT INTO analytics(campaign_id,delivered,opened,clicked,recorded_at)
+        VALUES(?,?,?,?,?)
+    """,(cid,delivered,opened,clicked,datetime.now().isoformat(timespec="seconds")))
+
+    conn.commit()
+    conn.close()
+    flash("Campaign processed successfully and analytics recorded.", "success")
+    return redirect(url_for("campaigns"))
+
+@app.route(“/automation”) def automation(): conn = get_db() rows =
+conn.execute(““” SELECT * FROM campaigns WHERE campaign_type IN
+(‘Welcome’,‘Promotional’,‘Reminder’) OR status=‘Scheduled’ ORDER BY id
+DESC “““).fetchall() conn.close() return
+render_template(”automation.html”, campaigns=rows)
+
+@app.route(“/analytics”) def analytics(): conn = get_db() rows =
+conn.execute(““” SELECT c.name,c.campaign_type,c.status,
+a.delivered,a.opened,a.clicked FROM campaigns c JOIN analytics a ON
+c.id=a.campaign_id ORDER BY a.id DESC “““).fetchall() conn.close()
+return render_template(”analytics.html”, rows=rows)
+
+@app.route(“/reports”) def reports(): conn = get_db() rows =
+conn.execute(““” SELECT
+c.id,c.name,c.subject,c.audience,c.campaign_type,c.status,
+COALESCE(a.delivered,0) delivered, COALESCE(a.opened,0) opened,
+COALESCE(a.clicked,0) clicked FROM campaigns c LEFT JOIN analytics a ON
+c.id=a.campaign_id ORDER BY c.id DESC “““).fetchall() conn.close()
+return render_template(”reports.html”, rows=rows)
+
+@app.route(“/reports/export”) def export_report(): conn = get_db() rows
+= conn.execute(““” SELECT
+c.name,c.subject,c.audience,c.campaign_type,c.status,
+COALESCE(a.delivered,0) delivered, COALESCE(a.opened,0) opened,
+COALESCE(a.clicked,0) clicked FROM campaigns c LEFT JOIN analytics a ON
+c.id=a.campaign_id ORDER BY c.id DESC “““).fetchall() conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Campaign","Subject","Audience","Type","Status","Delivered","Opened","Clicked","Open Rate %","Click Rate %"])
+
+    for r in rows:
+        open_rate = round(r["opened"]/r["delivered"]*100,1) if r["delivered"] else 0
+        click_rate = round(r["clicked"]/r["delivered"]*100,1) if r["delivered"] else 0
+        writer.writerow([
+            r["name"],r["subject"],r["audience"],r["campaign_type"],r["status"],
+            r["delivered"],r["opened"],r["clicked"],open_rate,click_rate
+        ])
+
+    memory = io.BytesIO(output.getvalue().encode("utf-8"))
+    memory.seek(0)
+    return send_file(memory,
+                     mimetype="text/csv",
+                     as_attachment=True,
+                     download_name="campaign_report.csv")
+
+if name == “main”: init_db() app.run(debug=True)
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/requirements.txt
+========================================================================
+
+Flask==3.0.3 Werkzeug==3.0.3
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/sample_subscribers.csv
+========================================================================
+
+name,email,customer_group Aman Agarwal,aman@example.com,Students Priya
+Sharma,priya@example.com,Premium Customers Rahul
+Verma,rahul@example.com,New Customers
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/static/css/style.css
+========================================================================
+
+:root{ –navy:#0a1f37; –navy2:#19304e; –cream:#f8f5ee; –gold:#c49d57;
+–white:#ffffff; –text:#1d2732; –muted:#6b7076; –line:#ddd9d1; }
+
+*{box-sizing:border-box}
+
+body{ margin:0; font-family:Arial,Helvetica,sans-serif;
+background:var(–cream); color:var(–text); }
+
+.app{display:flex;min-height:100vh}
+
+.sidebar{ width:240px; position:fixed; left:0;top:0;bottom:0;
+background:var(–navy); color:white; padding:28px 18px; }
+
+.brand{ display:flex; align-items:center; gap:12px; margin-bottom:35px;
+}
+
+.logo{ width:42px;height:42px; border:2px solid var(–gold);
+border-radius:10px; display:flex; align-items:center;
+justify-content:center; color:var(–gold); font-weight:bold; }
+
+.brand strong{display:block} .brand
+span{display:block;font-size:12px;color:#cbd4dd}
+
+nav{display:grid;gap:8px}
+
+nav a{ text-decoration:none; color:#e0e6ec; padding:12px 14px;
+border-radius:8px; }
+
+nav a:hover{ background:var(–navy2); border-left:3px solid var(–gold); }
+
+.project-name{ position:absolute; bottom:22px; font-size:11px;
+color:#9eabb7; }
+
+.main{ margin-left:240px; padding:32px 36px; width:calc(100% - 240px); }
+
+.topbar{margin-bottom:24px} .topbar
+h1{margin:0;color:var(–navy);font-size:30px} .topbar p{margin:6px
+0;color:var(–muted)}
+
+.flash{ background:white; border:1px solid var(–line); border-left:4px
+solid var(–gold); padding:11px 14px; margin-bottom:14px;
+border-radius:8px; }
+
+.kpi-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:15px;
+margin-bottom:20px; }
+
+.kpi{ background:white; border:1px solid var(–line); border-top:3px
+solid var(–gold); border-radius:12px; padding:19px; }
+
+.kpi span{color:var(–muted);font-size:13px} .kpi
+strong{display:block;font-size:30px;color:var(–navy);margin:7px 0} .kpi
+small{color:var(–muted)}
+
+.panel{ background:white; border:1px solid var(–line);
+border-radius:12px; padding:20px; margin-bottom:20px; }
+
+.panel h2{color:var(–navy);margin-top:0}
+
+.panel-head{ display:flex; align-items:center;
+justify-content:space-between; margin-bottom:12px; }
+
+table{ width:100%; border-collapse:collapse; }
+
+th,td{ padding:12px; border-bottom:1px solid #ece8e1; text-align:left;
+font-size:13px; }
+
+th{ font-size:11px; text-transform:uppercase; color:var(–muted); }
+
+td small{ display:block; color:var(–muted); margin-top:3px; }
+
+.badge{ display:inline-block; padding:5px 8px; background:#efe5d1;
+color:#745b2b; border-radius:999px; font-size:11px; font-weight:bold; }
+
+.btn{ display:inline-block; padding:10px 14px; border:1px solid
+var(–line); background:white; color:var(–navy); border-radius:8px;
+text-decoration:none; font-weight:bold; cursor:pointer; }
+
+.btn.primary{ background:var(–navy); color:white;
+border-color:var(–navy); }
+
+.toolbar{ display:flex; justify-content:flex-end; margin-bottom:15px; }
+
+.two-col{ display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+
+.form-grid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+
+.full{grid-column:1/-1}
+
+label{ font-size:12px; font-weight:bold; color:var(–muted); }
+
+input,select,textarea{ width:100%; margin-top:6px; padding:11px;
+border:1px solid var(–line); border-radius:8px; font:inherit; }
+
+.cards{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+
+.campaign-card{ background:white; border:1px solid var(–line);
+border-radius:12px; padding:18px; }
+
+.campaign-top{ display:flex; justify-content:space-between; }
+
+.type{ font-size:11px; color:var(–gold); font-weight:bold; }
+
+dl{ display:grid; grid-template-columns:80px 1fr; gap:8px;
+font-size:12px; }
+
+dt{color:var(–muted)} dd{margin:0}
+
+.link-danger{ border:0; background:none; color:#a14c4c; cursor:pointer;
+}
+
+.automation-flow{ display:flex; align-items:center; gap:10px;
+flex-wrap:wrap; margin-bottom:20px; }
+
+.automation-flow div{ background:white; border:1px solid var(–line);
+padding:12px; border-radius:8px; font-weight:bold; color:var(–navy); }
+
+.automation-flow span{ color:var(–gold); font-weight:bold; }
+
+.muted{color:var(–muted);font-size:12px}
+.empty{background:white;padding:25px;border:1px dashed
+var(–line);border-radius:10px}
+
+@media(max-width:900px){ .sidebar{position:static;width:100%}
+.app{display:block} .main{margin:0;width:100%;padding:20px}
+.kpi-grid,.cards,.two-col,.form-grid{grid-template-columns:1fr}
+.full{grid-column:auto} }
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/templates/analytics.html
+========================================================================
+
+{% extends “base.html” %} {% block heading %}Campaign Analytics
+Dashboard{% endblock %} {% block subheading %}Open rates, click rates
+and campaign performance{% endblock %} {% block content %}
+
+Campaign Metrics
+Campaign
+Delivered
+Opened
+Clicked
+Open Rate
+Click Rate
+{% for r in rows %}
+{{ r.name }}
+{{ r.delivered }}
+{{ r.opened }}
+{{ r.clicked }}
+{{ ((r.opened/r.delivered*100) if r.delivered else 0)|round(1) }}%
+{{ ((r.clicked/r.delivered*100) if r.delivered else 0)|round(1) }}%
+{% else %}
+No analytics yet. Process a campaign first.
+{% endfor %}
+
+{% endblock %}
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/templates/automation.html
+========================================================================
+
+{% extends “base.html” %} {% block heading %}Email Automation System{%
+endblock %} {% block subheading %}Welcome emails, promotional campaigns
+and reminder workflows{% endblock %} {% block content %}
+
+Trigger / Schedule
+
+→
+
+Choose Campaign
+
+→
+
+Select Subscriber Group
+
+→
+
+Send Email
+
+→
+
+Record Engagement
+
+Automation Queue
+Campaign
+Type
+Audience
+Schedule
+Status
+{% for c in campaigns %}
+{{ c.name }}
+{{ c.campaign_type }}
+{{ c.audience }}
+{{ c.scheduled_at or ‘Manual’ }}
+{{ c.status }}
+{% else %}
+No automation items available.
+{% endfor %}
+
+{% endblock %}
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/templates/base.html
+========================================================================
+
+<!doctype html>
+{% block title %}Email Marketing Automation{% endblock %}
+        <div class="logo">EM</div>
+        <div>
+            <strong>Email Marketing</strong>
+            <span>Automation System</span>
+        </div>
+    </div>
+
+    <nav>
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('subscribers') }}">Subscribers</a>
+        <a href="{{ url_for('campaigns') }}">Campaigns</a>
+        <a href="{{ url_for('automation') }}">Automation</a>
+        <a href="{{ url_for('analytics') }}">Analytics</a>
+        <a href="{{ url_for('reports') }}">Reports</a>
+    </nav>
+
+    <div class="project-name">Digital Marketing Capstone Project</div>
+
+        <h1>{% block heading %}Dashboard{% endblock %}</h1>
+        <p>{% block subheading %}Email marketing workflow overview{% endblock %}</p>
+    </div>
+
+{% with messages = get_flashed_messages(with_categories=true) %} {% if
+messages %} {% for category,message in messages %}
+
+{{ message }}
+
+    {% endfor %}
+
+{% endif %} {% endwith %}
+
+{% block content %}{% endblock %}
+
+========================================================================
+FILE:
+Email_Marketing_Automation_Source_Code/templates/campaign_form.html
+========================================================================
+
+{% extends “base.html” %} {% block heading %}Create Campaign{% endblock
+%} {% block subheading %}Create, configure and schedule an email
+campaign{% endblock %} {% block content %}
+
+Campaign Name Campaign Type Promotional Welcome Reminder
+
+Subject Sender Email
+
+Audience All {% for g in groups %} {{ g.customer_group }} {% endfor %}
+
+Template Promotional Welcome Reminder Newsletter
+
+Schedule Date & Time
+
+Email Content
+
+Save Campaign
+Cancel
+
+{% endblock %}
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/templates/campaigns.html
+========================================================================
+
+{% extends “base.html” %} {% block heading %}Email Campaign Creation{%
+endblock %} {% block subheading %}Create templates, promotional emails,
+campaign details and schedules{% endblock %} {% block content %}
+
++ New Campaign
+
+{% for c in campaigns %}
+
+{{ c.status }} {{ c.campaign_type }}
+
+{{ c.name }}
+{{ c.subject }}
+Audience
+{{ c.audience }}
+Template
+{{ c.template_name }}
+Scheduled
+{{ c.scheduled_at or ‘Not scheduled’ }}
+{% if c.status != ‘Sent’ %}
+Process / Send
+{% endif %}
+
+{% else %}
+
+No campaigns created yet.
+
+{% endfor %}
+
+{% endblock %}
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/templates/dashboard.html
+========================================================================
+
+{% extends “base.html” %} {% block heading %}Campaign Dashboard{%
+endblock %} {% block subheading %}Subscriber, campaign and engagement
+performance overview{% endblock %} {% block content %}
+
+Total Subscribers{{ subscriber_count }}
+
+Total Campaigns{{ campaign_count }}{{ sent_count }} sent
+
+Open Rate{{ open_rate }}%
+
+Click Rate{{ click_rate }}%
+
+Recent Campaigns
+Create Campaign
+
+Campaign
+Audience
+Status
+Delivered
+Opened
+Clicked
+{% for r in recent %}
+{{ r.name }}{{ r.campaign_type }}
+{{ r.audience }}
+{{ r.status }}
+{{ r.delivered or 0 }}
+{{ r.opened or 0 }}
+{{ r.clicked or 0 }}
+{% else %}
+No campaigns available.
+{% endfor %}
+
+{% endblock %}
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/templates/reports.html
+========================================================================
+
+{% extends “base.html” %} {% block heading %}Report Generation{%
+endblock %} {% block subheading %}Campaign summaries, performance
+reports and subscriber analytics{% endblock %} {% block content %}
+
+Export CSV Report
+
+Marketing Performance Report
+Campaign
+Audience
+Type
+Status
+Delivered
+Opened
+Clicked
+{% for r in rows %}
+{{ r.name }}{{ r.subject }}
+{{ r.audience }}
+{{ r.campaign_type }}
+{{ r.status }}
+{{ r.delivered }}
+{{ r.opened }}
+{{ r.clicked }}
+{% endfor %}
+
+{% endblock %}
+
+========================================================================
+FILE: Email_Marketing_Automation_Source_Code/templates/subscribers.html
+========================================================================
+
+{% extends “base.html” %} {% block heading %}Subscriber Management{%
+endblock %} {% block subheading %}Add subscribers, import contacts and
+organize customer groups{% endblock %} {% block content %}
+
+Add Subscriber
+Name Email Customer Group Status Active Inactive Add Subscriber
+
+Import Contact List
+CSV File
+Columns: name, email, customer_group
+Import CSV
+
+Subscriber Database
+Name
+Email
+Group
+Status
+Created
+{% for s in subscribers %}
+{{ s.name }}
+{{ s.email }}
+{{ s.customer_group }}
+{{ s.status }}
+{{ s.created_at[:10] }}
+Delete
+{% endfor %}
+
+{% endblock %}
